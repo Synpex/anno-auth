@@ -2,6 +2,7 @@
 FROM node:20 AS base
 WORKDIR /usr/src/app
 COPY package*.json ./
+COPY .env.test ./
 RUN npm install --only=production
 COPY . .
 
