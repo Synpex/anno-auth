@@ -10,17 +10,41 @@ variables:
   tag: '$(Build.BuildId)'
 
 stages:
-  - stage: Build
-    displayName: Build and Test
+  - stage: Test
+    displayName: Run E2E Tests
     jobs:
-      - job: Build
-        displayName: Build Image
+      - job: E2ETests
+        displayName: NestJS E2E Tests
         pool:
-          name: upcode-dev.at  # Specify your custom pool here
+          name: upcode-dev.at
+          vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
             submodules: true
 
+          # Setting up the Docker environment for E2E testing
+          - script: |
+              docker build -f Dockerfile -t $(imageName):test .
+              docker run --env-file .env.test -d --name app-test $(imageName):test
+              docker exec app-test npm run test:e2e
+            displayName: Execute E2E Tests
+          - script: |
+              docker stop app-test
+              docker rm app-test
+            displayName: Cleanup Test Environment
+
+  - stage: Build
+    displayName: Build and Push Image
+    jobs:
+      - job: Build
+        displayName: Build Docker Image
+        pool:
+          name: upcode-dev.at
+        steps:
+          - checkout: self
+            submodules: true
+
+          # Build and Push Docker Image
           - task: Docker@2
             displayName: Build Docker Image
             inputs:
@@ -29,7 +53,6 @@ stages:
               repository: $(imageName)
               tags: |
                 $(tag)
-
           - task: Docker@2
             displayName: Push Image to DockerHub
             inputs:
@@ -39,24 +62,9 @@ stages:
               tags: |
                 $(tag)
 
-  - stage: Test
-    displayName: Run Unit Tests
-    jobs:
-      - job: NestJsTests
-        displayName: NestJS Unit Tests
-        pool:
-          name: upcode-dev.at
-          vmImage: 'ubuntu-latest'
-        steps:
-          - checkout: self
-            submodules: true
-          - script: |
-              docker run "$(imageName):$(tag)" npm test
-            displayName: Run NestJS Unit Tests
-
   - stage: Deploy
     displayName: Deploy to OpenShift UAT
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))  # Deploy only if tests pass and it's the production branch
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
     jobs:
     - job: DeployJob
       displayName: Deploy Image to OpenShift UAT
@@ -66,7 +74,6 @@ stages:
         - checkout: none
         - task: oc-cmd@3
           displayName: 'Create New OpenShift Deployment'
-          continueOnError: true
           inputs:
             connectionType: 'OpenShift Connection Service'
             openshiftService: 'OpenShiftConnection'
@@ -74,7 +81,7 @@ stages:
               oc new-app $(imageName):$(tag) --name=uat-nestjsapp
               oc set env deployment/nestjsapp --from=configmap/uat-nestjsapp
               oc set env deployment/nestjsapp --from=secret/uat-nestjsapp
-              oc expose svc/nestjsapp 
+              oc expose svc/nestjsapp
             checkForErrors: 'false'
 
         - task: oc-cmd@3
