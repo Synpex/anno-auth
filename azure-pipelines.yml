@@ -1,0 +1,87 @@
+trigger:
+- master 
+
+resources:
+- repo: self
+
+variables:
+  dockerRegistryServiceConnection: 'DockerHubConnection'  
+  imageName: 'sebastianpreis/nestjsapp'  
+  tag: '$(Build.BuildId)'
+
+stages:
+  - stage: Build
+    displayName: Build and Test
+    jobs:
+      - job: Build
+        displayName: Build Image
+        pool:
+          name: upcode-dev.at  # Specify your custom pool here
+        steps:
+          - checkout: self
+            submodules: true
+
+          - task: Docker@2
+            displayName: Build Docker Image
+            inputs:
+              command: build
+              dockerfile: '**/Dockerfile'
+              repository: $(imageName)
+              tags: |
+                $(tag)
+
+          - task: Docker@2
+            displayName: Push Image to DockerHub
+            inputs:
+              command: push
+              repository: $(imageName)
+              dockerRegistryServiceConnection: $(dockerRegistryServiceConnection)
+              tags: |
+                $(tag)
+
+  - stage: Test
+    displayName: Run Unit Tests
+    jobs:
+      - job: NestJsTests
+        displayName: NestJS Unit Tests
+        pool:
+          name: upcode-dev.at
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+            submodules: true
+          - script: |
+              docker run "$(imageName):$(tag)" npm test
+            displayName: Run NestJS Unit Tests
+
+  - stage: Deploy
+    displayName: Deploy to OpenShift UAT
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))  # Deploy only if tests pass and it's the production branch
+    jobs:
+    - job: DeployJob
+      displayName: Deploy Image to OpenShift UAT
+      pool:
+        name: upcode-dev.at 
+      steps:
+        - checkout: none
+        - task: oc-cmd@3
+          displayName: 'Create New OpenShift Deployment'
+          continueOnError: true
+          inputs:
+            connectionType: 'OpenShift Connection Service'
+            openshiftService: 'OpenShiftConnection'
+            cmd: |
+              oc new-app $(imageName):$(tag) --name=uat-nestjsapp
+              oc set env deployment/nestjsapp --from=configmap/uat-nestjsapp
+              oc set env deployment/nestjsapp --from=secret/uat-nestjsapp
+              oc expose svc/nestjsapp 
+            checkForErrors: 'false'
+
+        - task: oc-cmd@3
+          displayName: 'Update Existing OpenShift Deployment'
+          inputs:
+            connectionType: 'OpenShift Connection Service'
+            openshiftService: 'OpenShiftConnection'
+            cmd: |
+              oc set image deployment/uat-nestjsapp uat-nestjsapp=$(imageName):$(tag)
+            checkForErrors: 'true'
