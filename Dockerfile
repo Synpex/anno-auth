@@ -8,6 +8,7 @@ COPY . .
 # ---- Build Stage ----
 FROM base AS build
 RUN npm install --only=development
+RUN npx prisma generate
 RUN npm run build
 
 # ---- Final Stage ----
